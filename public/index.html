@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Search agent</title>
+<style>
+  :root { --bg:#eef1f4; --panel:#fff; --text:#15202b; --gray:#64748b; --line:#d9e0e7; --blue:#2f4bd8; --chip:#e8edff; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0e141b; --panel:#16202a; --text:#e6ebf0; --gray:#93a1b1; --line:#243140; --blue:#8aa2ff; --chip:#1e2a4a; } }
+  * { box-sizing: border-box; }
+  body { margin:0; height:100vh; display:flex; flex-direction:column; background:var(--bg); color:var(--text); font:16px/1.5 system-ui, sans-serif; }
+  header { display:flex; justify-content:space-between; align-items:center; padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:16px; }
+  button { font:inherit; cursor:pointer; }
+  header button, .examples button { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 12px; text-align:left; }
+  #messages { flex:1; overflow-y:auto; padding:24px 16px; }
+  #chat { max-width:760px; margin:0 auto; display:flex; flex-direction:column; gap:20px; }
+  .user { align-self:flex-end; max-width:85%; background:var(--text); color:var(--bg); padding:9px 14px; border-radius:16px; white-space:pre-wrap; }
+  .bot { font:17px/1.6 Georgia, serif; }
+  .bot p { margin:0 0 10px; }
+  .bot table { border-collapse:collapse; font:14px system-ui, sans-serif; display:block; overflow-x:auto; margin-bottom:12px; }
+  .bot td, .bot th { border:1px solid var(--line); padding:6px 10px; text-align:left; vertical-align:top; }
+  .bot a { color:var(--blue); }
+  a.cite { font:600 11px system-ui, sans-serif; background:var(--chip); padding:2px 7px; border-radius:99px; text-decoration:none; }
+  .status { font:14px system-ui, sans-serif; color:var(--gray); }
+  .error { color:#c2410c; font:14px system-ui, sans-serif; }
+  .welcome { margin-top:6vh; } .welcome p { color:var(--gray); }
+  .examples { display:flex; flex-direction:column; gap:8px; align-items:flex-start; }
+  form { padding:12px 16px 18px; }
+  .box { max-width:760px; margin:0 auto; display:flex; gap:8px; background:var(--panel); border:1px solid var(--line); border-radius:14px; padding:8px; }
+  textarea { flex:1; resize:none; border:0; outline:0; background:none; color:var(--text); font:inherit; }
+  #send { background:var(--blue); color:var(--bg); border:0; border-radius:10px; padding:8px 16px; font-weight:600; }
+  #send:disabled { opacity:.5; }
+</style>
+</head>
+<body>
+<header><h1>Search agent</h1><button id="new-chat" type="button">New chat</button></header>
+<div id="messages"><div id="chat"></div></div>
+<form id="form"><div class="box">
+  <textarea id="input" rows="2" placeholder="Ask anything. It checks the web when facts can change."></textarea>
+  <button id="send" type="submit">Send</button>
+</div></form>
+
+<script>
+// One browser = one user (so the agent can remember old chats). "New chat" makes a new session.
+if (!localStorage.userId) localStorage.userId = crypto.randomUUID();
+if (!localStorage.sessionId) localStorage.sessionId = crypto.randomUUID();
+const userId = localStorage.userId;
+let sessionId = localStorage.sessionId;
+const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const chat = document.getElementById('chat');
+const messages = document.getElementById('messages');
+const input = document.getElementById('input');
+const sendButton = document.getElementById('send');
+let busy = false;
+
+// ---------- Turning the answer text into HTML ----------
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// bold, code, links, and citations like [s12] (shown as a small link with the site name)
+function formatInline(text, sources) {
+  let html = escapeHtml(text);
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+  return html.replace(/\[s(\d+)\]/g, function (match, id) {
+    const s = sources[id];
+    if (!s) return '';
+    const site = new URL(s.url).hostname.replace('www.', '');
+    return '<a class="cite" href="' + escapeHtml(s.url) + '" target="_blank" title="' + escapeHtml(s.title) + '">' + site + '</a>';
+  });
+}
+
+// paragraphs, bullet lists and tables (the only markdown the agent uses)
+function formatText(text, sources) {
+  const lines = text.split('\n');
+  let html = '';
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i].trim().startsWith('|') && i + 1 < lines.length && lines[i + 1].includes('---')) {
+      html += '<table>';
+      for (let row = 0; i < lines.length && lines[i].trim().startsWith('|'); row++, i++) {
+        if (row === 1) continue; // the --- line
+        const tag = row === 0 ? 'th' : 'td';
+        const cells = lines[i].trim().replace(/^\||\|$/g, '').split('|');
+        html += '<tr>' + cells.map(function (c) { return '<' + tag + '>' + formatInline(c.trim(), sources) + '</' + tag + '>'; }).join('') + '</tr>';
+      }
+      html += '</table>';
+    } else if (/^\s*[-*]\s+/.test(lines[i])) {
+      html += '<ul>';
+      for (; i < lines.length && /^\s*[-*]\s+/.test(lines[i]); i++) html += '<li>' + formatInline(lines[i].replace(/^\s*[-*]\s+/, ''), sources) + '</li>';
+      html += '</ul>';
+    } else {
+      if (lines[i].trim() !== '') html += '<p>' + formatInline(lines[i].replace(/^#+\s*/, ''), sources) + '</p>';
+      i++;
+    }
+  }
+  return html;
+}
+
+// ---------- Showing messages ----------
+function addUserMessage(text) {
+  const div = document.createElement('div');
+  div.className = 'user';
+  div.textContent = text;
+  chat.appendChild(div);
+}
+
+function addBotMessage() {
+  const div = document.createElement('div');
+  div.className = 'bot';
+  div.innerHTML = '<div class="answer"></div><div class="status"></div>';
+  chat.appendChild(div);
+  return { answer: div.querySelector('.answer'), status: div.querySelector('.status') };
+}
+
+function showWelcome() {
+  chat.innerHTML = '<div class="welcome"><h2>Ask about anything that changes.</h2><p>Prices, releases, news. It checks the web, and remembers what you asked before.</p><div class="examples"></div></div>';
+  const examples = [
+    'Compare HubSpot Sales Hub and Pipedrive for a 20-person sales team, as of today',
+    'Has anything big changed in managed Postgres pricing in the last month?',
+    'What did I ask you yesterday, and is the answer still right?',
+  ];
+  for (const text of examples) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = text;
+    button.onclick = function () { sendMessage(text); };
+    chat.querySelector('.examples').appendChild(button);
+  }
+}
+
+// ---------- Sending a message ----------
+async function sendMessage(text) {
+  text = text.trim();
+  if (busy || text === '') return;
+  busy = true;
+  sendButton.disabled = true;
+  input.value = '';
+  if (chat.querySelector('.welcome')) chat.innerHTML = '';
+
+  addUserMessage(text);
+  const bot = addBotMessage();
+  let answerText = '';
+  const sources = {}; // id -> source, filled while the agent searches
+
+  // Handle one event from the server
+  function handleEvent(event) {
+    if (event.type === 'status') {
+      bot.status.textContent = answerText ? '' : event.text;
+    } else if (event.type === 'source') {
+      sources[event.source.id] = event.source;
+    } else if (event.type === 'text') {
+      answerText += event.text;
+      bot.status.textContent = '';
+      bot.answer.innerHTML = formatText(answerText, sources);
+    } else if (event.type === 'done') {
+      for (const s of event.sources) sources[s.id] = s; // includes pages from older chats
+      bot.answer.innerHTML = formatText(answerText, sources);
+    } else if (event.type === 'error') {
+      bot.status.textContent = '';
+      bot.answer.insertAdjacentHTML('beforeend', '<p class="error">' + escapeHtml(event.message) + '</p>');
+    }
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  try {
+    const response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ userId: userId, sessionId: sessionId, message: text, tz: timezone }),
+    });
+    if (!response.ok) throw new Error('Request failed (' + response.status + ')');
+
+    // The server sends events like "data: {...}" separated by a blank line
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      buffer += decoder.decode(result.value, { stream: true });
+      let end;
+      while ((end = buffer.indexOf('\n\n')) >= 0) {
+        const chunk = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        if (chunk.startsWith('data: ')) handleEvent(JSON.parse(chunk.slice(6)));
+      }
+    }
+  } catch (error) {
+    handleEvent({ type: 'error', message: error.message || 'Connection lost. Try again.' });
+  }
+
+  busy = false;
+  sendButton.disabled = false;
+  input.focus();
+}
+
+// ---------- Page start ----------
+// Show the current chat again after a reload
+async function loadHistory() {
+  try {
+    const response = await fetch('/api/history?userId=' + userId + '&sessionId=' + sessionId);
+    const data = await response.json();
+    if (data.messages.length === 0) return showWelcome();
+    for (const m of data.messages) {
+      if (m.role === 'user') {
+        addUserMessage(m.text);
+      } else {
+        const sources = {};
+        for (const s of m.sources || []) sources[s.id] = s;
+        addBotMessage().answer.innerHTML = formatText(m.text, sources);
+      }
+    }
+  } catch (error) {
+    showWelcome();
+  }
+}
+
+document.getElementById('form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  sendMessage(input.value);
+});
+input.addEventListener('keydown', function (e) { // Enter sends, Shift+Enter makes a new line
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    sendMessage(input.value);
+  }
+});
+document.getElementById('new-chat').addEventListener('click', function () {
+  if (busy) return;
+  sessionId = crypto.randomUUID();
+  localStorage.sessionId = sessionId;
+  showWelcome();
+});
+
+loadHistory();
+</script>
+</body>
+</html>
