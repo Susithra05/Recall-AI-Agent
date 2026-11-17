@@ -17,15 +17,15 @@ Needs Node 20.12 or newer.
 
 ## The files
 
-| File | What it does |
-|---|---|
-| `src/server.ts` | Web server. Sends the answer to the browser piece by piece. |
-| `src/agent.ts` | Handles one question: prepares context, asks Gemini, runs searches, saves the answer. |
-| `src/dates.ts` | Turns "Monday" or "3 November" into real dates (the model is bad at this). |
-| `src/memory.ts` | Saves every message to a file and finds old messages when the user mentions the past. |
-| `src/search.ts` | Calls the Tavily search API. |
-| `src/prompt.ts` | The instructions for the model and the description of the search tool. |
-| `public/index.html` | The chat page. |
+| File                | What it does                                                                          |
+| ------------------- | ------------------------------------------------------------------------------------- |
+| `src/server.ts`     | Web server. Sends the answer to the browser piece by piece.                           |
+| `src/agent.ts`      | Handles one question: prepares context, asks Gemini, runs searches, saves the answer. |
+| `src/dates.ts`      | Turns "Monday" or "3 November" into real dates (the model is bad at this).            |
+| `src/memory.ts`     | Saves every message to a file and finds old messages when the user mentions the past. |
+| `src/search.ts`     | Calls the Tavily search API.                                                          |
+| `src/prompt.ts`     | The instructions for the model and the description of the search tool.                |
+| `public/index.html` | The chat page.                                                                        |
 
 ## What happens when you ask a question
 
@@ -36,3 +36,14 @@ Needs Node 20.12 or newer.
 5. The model can ask for several searches at once. Each result gets an id like `[s12]`.
 6. The answer cites pages with those ids. The answer and its pages are saved, so a later
    "is your answer still correct?" can compare against what was said before.
+
+<table>
+  <tr>
+    <td><img src="results/ss1.png" width="400"></td>
+    <td><img src="results/ss2.png" width="400"></td>
+  </tr>
+  <tr>
+    <td><img src="results/ss3.png" width="400"></td>
+    <td><img src="results/ss4.png" width="400"></td>
+  </tr>
+</table>
